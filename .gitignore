@@ -1,0 +1,21 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# PyInstaller 打包产生的垃圾
+build/
+dist/
+*.spec
+
+# 庞大的原始媒体文件
+assets/*.mp4
+assets/*.mp3
+assets/*.avi
+
+# 虚拟环境
+venv/
+.venv/
+
+# 系统文件
+.DS_Store
+Thumbs.db
