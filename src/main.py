@@ -35,6 +35,12 @@ def mci_send(command):
         print(f"\n[MCI Error {error_code}]: {err_msg.value}")
     return error_code
 
+def format_time(seconds):
+    """将秒数格式化为 mm:ss"""
+    mins = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{mins:02d}:{secs:02d}"
+
 def play():
     # 1. 窗口初始化
     os.system("cls") # 清屏
@@ -65,31 +71,41 @@ def play():
     # 5. 启动播放
     total_frames = len(frames)
     fps = 30.0
+    duration = total_frames / fps # 总时长
     start_time = time.perf_counter()
     mci_send("play music")
 
     try:
         while True:
-            # 计算当前音频时间对应的帧索引（Master Clock 同步逻辑）
             elapsed = time.perf_counter() - start_time
             target_frame_idx = int(elapsed * fps)
 
-            # 检查是否播放完毕
             if target_frame_idx >= total_frames:
                 break
 
-            # 渲染当前帧（跳过落后帧，实现 Drop Frame 同步）
+            # --- 1. 渲染视频帧 ---
             frame = frames[target_frame_idx]
-            
-            # 构造整帧字符串，一次性写入 stdout 减少 I/O 耗时
-            # \033[H 将光标重置到左上角 (0,0) 实现无闪烁刷新
             screen_buffer = ["".join(["#" if pixel else " " for pixel in row]) for row in frame]
-            output = "\033[H" + "\n".join(screen_buffer)
+            
+            # --- 2. 构造进度条 ---
+            progress = (target_frame_idx + 1) / total_frames
+            bar_length = 40 # 进度条的总宽度
+            filled_length = int(bar_length * progress)
+            bar = "█" * filled_length + "-" * (bar_length - filled_length)
+            
+            curr_time_str = format_time(elapsed)
+            total_time_str = format_time(duration)
+            
+            progress_line = f"\n[{bar}] {progress*100:4.1f}% | {curr_time_str} / {total_time_str}"
+            
+            # --- 3. 一次性合并输出 ---
+            # 把视频内容和进度条拼在一起，减少 sys.stdout.write 的调用次数
+            output = "\033[H" + "\n".join(screen_buffer) + progress_line
             
             sys.stdout.write(output)
             sys.stdout.flush()
 
-            # 动态休眠：计算距离下一帧渲染的时间间隔
+            # --- 4. 动态休眠 ---
             next_frame_time = (target_frame_idx + 1) / fps
             sleep_time = next_frame_time - (time.perf_counter() - start_time)
             if sleep_time > 0:
