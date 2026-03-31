@@ -4,6 +4,7 @@ import time
 import sys
 import os
 import ctypes
+import msvcrt
 
 # 加载 Windows 多媒体底层库
 winmm = ctypes.windll.winmm
@@ -42,82 +43,93 @@ def format_time(seconds):
     return f"{mins:02d}:{secs:02d}"
 
 def play():
-    # 1. 窗口初始化
-    os.system("cls") # 清屏
-    os.system("")    # 触发 Windows 终端 ANSI 转义序列支持
-
-    # 2. 定位资源
+    os.system("") 
     data_path = get_resource_path("data/video_data.dat")
     midi_path = get_resource_path("assets/bad_apple.mid")
 
-    if not os.path.exists(data_path):
-        print(f"致命错误: 找不到数据文件 {data_path}")
-        return
-
-    # 3. 加载预处理后的视频数据
-    print("正在加载数据，请稍候...")
     with gzip.open(data_path, 'rb') as f:
         width, height, frames = pickle.load(f)
 
-    # 4. 准备音频
-    # 使用绝对路径并加双引号，防止路径空格导致 MCI 失效
     midi_abs = os.path.abspath(midi_path)
     mci_send(f"open \"{midi_abs}\" alias music")
+    # 强制设置时间格式为毫秒，这是音画同步的基石
+    mci_send("set music time format milliseconds")
 
-    print(f"分辨率: {width}x{height} | 帧数: {len(frames)}")
-    print(">>> 已准备就绪，按 [Enter] 开始音画同步播放 <<<")
-    input()
-
-    # 5. 启动播放
     total_frames = len(frames)
     fps = 30.0
-    duration = total_frames / fps # 总时长
+    duration = total_frames / fps
+    
+    print("已就绪。 [Space]: 暂停/继续 | [Q]: 退出")
+    input("按回车开始...")
+
     start_time = time.perf_counter()
     mci_send("play music")
+    
+    is_paused = False
+    pause_start_time = 0
+    total_pause_duration = 0 # 累计暂停的时间
+    current_frame_idx = 0
 
     try:
-        while True:
-            elapsed = time.perf_counter() - start_time
-            target_frame_idx = int(elapsed * fps)
+        while current_frame_idx < total_frames:
+            # --- 1. 处理键盘输入 (非阻塞) ---
+            if msvcrt.kbhit():
+                key = msvcrt.getch()
+                if key == b' ': 
+                    is_paused = not is_paused
+                    if is_paused:
+                        # 暂停音乐
+                        mci_send("pause music")
+                        pause_start_time = time.perf_counter()
+                    else:
+                        # --- 核心改进部分 ---
+                        # 计算当前应该对应的毫秒位置
+                        # elapsed 是我们逻辑上的已播放时间
+                        current_ms = int((time.perf_counter() - start_time - total_pause_duration) * 1000)
+                        
+                        # 补偿暂停时长
+                        total_pause_duration += (time.perf_counter() - pause_start_time)
+                        
+                        # 强制从指定毫秒位置播放
+                        mci_send(f"play music from {current_ms}")
+                        # -------------------
+                elif key.lower() == b'q':
+                    break
 
-            if target_frame_idx >= total_frames:
+            if is_paused:
+                time.sleep(0.1) # 暂停时降低 CPU 占用
+                continue
+
+            # --- 2. 计算当前时间 (扣除暂停时长) ---
+            elapsed = time.perf_counter() - start_time - total_pause_duration
+            current_frame_idx = int(elapsed * fps)
+
+            if current_frame_idx >= total_frames:
                 break
 
-            # --- 1. 渲染视频帧 ---
-            frame = frames[target_frame_idx]
+            # --- 3. 渲染画面与进度条 ---
+            frame = frames[current_frame_idx]
             screen_buffer = ["".join(["#" if pixel else " " for pixel in row]) for row in frame]
             
-            # --- 2. 构造进度条 ---
-            progress = (target_frame_idx + 1) / total_frames
-            bar_length = 40 # 进度条的总宽度
-            filled_length = int(bar_length * progress)
-            bar = "█" * filled_length + "-" * (bar_length - filled_length)
+            # 进度条逻辑
+            progress = (current_frame_idx + 1) / total_frames
+            bar = "█" * int(40 * progress) + "-" * (40 - int(40 * progress))
+            status = " [PAUSED] " if is_paused else " [PLAYING]"
+            progress_line = f"\n{status} [{bar}] {progress*100:4.1f}%"
             
-            curr_time_str = format_time(elapsed)
-            total_time_str = format_time(duration)
-            
-            progress_line = f"\n[{bar}] {progress*100:4.1f}% | {curr_time_str} / {total_time_str}"
-            
-            # --- 3. 一次性合并输出 ---
-            # 把视频内容和进度条拼在一起，减少 sys.stdout.write 的调用次数
-            output = "\033[H" + "\n".join(screen_buffer) + progress_line
-            
-            sys.stdout.write(output)
+            sys.stdout.write("\033[H" + "\n".join(screen_buffer) + progress_line)
             sys.stdout.flush()
 
-            # --- 4. 动态休眠 ---
-            next_frame_time = (target_frame_idx + 1) / fps
-            sleep_time = next_frame_time - (time.perf_counter() - start_time)
+            # --- 4. 同步休眠 ---
+            next_frame_time = (current_frame_idx + 1) / fps
+            sleep_time = next_frame_time - (time.perf_counter() - start_time - total_pause_duration)
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
-    except KeyboardInterrupt:
-        print("\n用户中止播放")
     finally:
-        # 释放音频资源
         mci_send("stop music")
         mci_send("close music")
-        print("\n播放完成。")
+        print("\n已退出播放。")
 
 if __name__ == "__main__":
     play()
